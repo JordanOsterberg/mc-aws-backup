@@ -105,7 +105,7 @@ export default (discordController: DiscordController) => {
         console.log("[BACKUP] Nuking backup folder & zip")
 
         deleteFolderRecursive(backupFolder);
-        fs.rmSync(backupFolder + ".zip");
+        fs.unlinkSync(backupFolder + ".zip");
       } catch (error) {
         console.error(error);
       }
