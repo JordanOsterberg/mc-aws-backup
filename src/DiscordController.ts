@@ -3,11 +3,22 @@ import Discord from 'discord.js';
 export class DiscordController {
   private client?: Discord.Client
 
-  constructor(botToken?: string) {
+  constructor(botToken: string | undefined, shouldHandleStartCommand: boolean = true, startBackupCommandProcessor: () => void) {
     if (botToken === undefined) return;
 
     this.client = new Discord.Client();
     this.client.login(botToken);
+    if (shouldHandleStartCommand) {
+      console.log("Allowed to handle start command");
+      
+      this.client.on("message", (message: Discord.Message) => {
+        if (message.channel.id !== process.env.DISCORD_BACKUPS_CHANNEL_ID) return;
+        if (message.content.toLowerCase() !== "!startbackup") return;
+        if (!message.member?.guild.member(message.author)?.hasPermission('ADMINISTRATOR')) return;
+
+        startBackupCommandProcessor()
+      });
+    }
   }
 
   public sendMessage = async (
