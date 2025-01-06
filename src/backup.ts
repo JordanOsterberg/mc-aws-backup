@@ -2,19 +2,13 @@ import fs from 'fs';
 import path from 'path';
 import archiver from 'archiver';
 
-import AWS from 'aws-sdk';
 import { DiscordController } from './DiscordController';
 import Discord from 'discord.js'
 
-export default (discordController: DiscordController) => {
-  const { AWS_ACCESS_ID, AWS_SECRET, AWS_BUCKET_NAME, AWS_REGION } = process.env;
+import { BackupDestination } from './backup/BackupDestination';
+import formatBytes from './util/formatBytes';
 
-  AWS.config.update({
-    accessKeyId: AWS_ACCESS_ID,
-    secretAccessKey: AWS_SECRET,
-    region: AWS_REGION
-  })
-
+export default (discordController: DiscordController, backupDestinations: BackupDestination[]) => {
   const targetFolderPath = process.env.SERVER_FOLDER;
   if (targetFolderPath === undefined) {
     console.error("No SERVER_FOLDER environment variable supplied.")
@@ -41,27 +35,53 @@ export default (discordController: DiscordController) => {
     }
   }
 
-  const output = fs.createWriteStream(targetFolderPath + backupFolderName + ".zip");
+  const outputPath = targetFolderPath + backupFolderName + ".zip";
+  const output = fs.createWriteStream(outputPath);
   const archive = archiver('zip', {
     zlib: { level: 9 }
   });
 
-  output.on('close', function () {
+  output.on('close', async function () {
     console.log('[BACKUP] Archive is ' + archive.pointer() + ' total bytes');
 
-    discordController.sendMessage(
-      new Discord.MessageEmbed()
-        .setTitle("Backup Upload Starting...")
-        .setDescription(`File size is ${formatBytes(archive.pointer())}`),
-      process.env.DISCORD_GUILD_ID,
-      process.env.DISCORD_BACKUPS_CHANNEL_ID
-    );
+    for (const dest of backupDestinations) {
+      discordController.sendMessage(
+        new Discord.MessageEmbed()
+          .setTitle(`${dest.name} Backup Starting...`)
+          .setDescription(`File size is ${formatBytes(archive.pointer())}`),
+        process.env.DISCORD_GUILD_ID,
+        process.env.DISCORD_BACKUPS_CHANNEL_ID
+      );
 
-    uploadToS3(
-      fs.readFileSync(targetFolderPath + backupFolderName + ".zip"),
-      backupFolderName + ".zip",
-      targetFolderPath + backupFolderName
-    );
+      const backupLocation = await dest.backup(outputPath);
+
+      let embed = new Discord.MessageEmbed()
+        .setTitle(`${dest.name} Backup Complete!`)
+        .setColor("#00ff00")
+        .setDescription(`Total zipped file size is ${formatBytes(archive.pointer())}`)
+        .setFooter(backupLocation);
+
+      if (backupLocation.startsWith("http") || backupLocation.startsWith("https")) {
+        embed = embed.setURL(backupLocation);
+      }
+
+      discordController.sendMessage(
+        embed,
+        process.env.DISCORD_GUILD_ID,
+        process.env.DISCORD_BACKUPS_CHANNEL_ID
+      );
+    }
+
+    try {
+      console.log("[BACKUP] Nuking backup folder & zip")
+
+      deleteFolderRecursive(backupFolderName);
+      fs.unlinkSync(outputPath);
+    } catch (error) {
+      console.error(error);
+    }
+
+    console.log(`[BACKUP] Backup successful`);
   });
 
   archive.on('error', function (err) {
@@ -89,56 +109,6 @@ export default (discordController: DiscordController) => {
       fs.copyFileSync(src, dest);
     }
   };
-
-  function uploadToS3(zip: Buffer, fileName: string, backupFolder: string) {
-    const s3 = new AWS.S3();
-
-    const params = {
-      Bucket: AWS_BUCKET_NAME ?? "",
-      Key: fileName,
-      Body: zip,
-      ACL: 'public-read'
-    };
-
-    s3.upload(params, (err: any, data: any) => {
-      try {
-        console.log("[BACKUP] Nuking backup folder & zip")
-
-        deleteFolderRecursive(backupFolder);
-        fs.unlinkSync(backupFolder + ".zip");
-      } catch (error) {
-        console.error(error);
-      }
-
-      if (err) {
-        throw err;
-      }
-
-      console.log(`[BACKUP] Upload successful. Location: ${data.Location}. See you in a few days`);
-      discordController.sendMessage(
-        new Discord.MessageEmbed()
-          .setTitle("Backup Complete!")
-          .setColor("#00ff00")
-          .setDescription(`Total zipped file size is ${formatBytes(archive.pointer())}`)
-          .setFooter(data.Location)
-          .setURL(data.Location),
-        process.env.DISCORD_GUILD_ID,
-        process.env.DISCORD_BACKUPS_CHANNEL_ID
-      );
-    });
-  }
-}
-
-function formatBytes(bytes: number, decimals = 2) {
-  if (bytes === 0) return '0 Bytes';
-
-  const k = 1024;
-  const dm = decimals < 0 ? 0 : decimals;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
-
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
 function deleteFolderRecursive(path: any) {
